@@ -63,8 +63,7 @@ struct ring
         const channel_type */*channel*/,
         const message_type */*messageIn*/,
         const properties_type * /*properties*/,
-        device_type *state,
-        void * /*src*/
+        device_type *state
     ){  
         state->current = 1;
     }

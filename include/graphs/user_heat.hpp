@@ -9,12 +9,8 @@
 #include <climits>
 #include <unistd.h>
 #include <iostream>
-#include <map>
-#include <unordered_map>
 
 #include "jpeg_helpers.hpp"
-
-#include <tbb/mutex.h>
 
 struct heat
 {
@@ -57,23 +53,14 @@ struct heat
         bool isOutput;              // Use to filter a sub-set of nodes
     };
         
-    struct device_data_type
-    {
-        int32_t acc;
-        enum {No = 0, Now, Next} seen;
-    };
-
     struct device_type
     {    
-        //device_type() : mutex(0) {};
         uint32_t time;
         int32_t heat;
         int32_t accNow;
         uint32_t seenNow;
         int32_t accNext;
         uint32_t seenNext;
-        //tbb::mutex *mutex;
-        std::unordered_map<const void *, device_data_type> map;
     };
     
     /////////////////////////////////////////////////////////////
@@ -100,31 +87,13 @@ struct heat
         state->seenNow = properties->neighbourCount;
         state->accNext = 0;
         state->seenNext = 0;
-        /*if (state->mutex)
-            delete state->mutex;
-        state->mutex = new tbb::mutex;*/
     }
     
     static bool ready_to_send(
         const graph_type *graph,
         const properties_type *properties,
-        device_type *state
+        const device_type *state
     ){
-        // Summarise edges
-        for (std::pair<const void * const, device_data_type> &pair: state->map) {
-            device_data_type &data = pair.second;
-            //std::clog << "src: " << pair.first << ", seen: " << (unsigned)data.seen << std::endl;
-            if (data.seen == data.Now) {
-                state->seenNow++;
-                state->accNow += data.acc;
-            } else if (data.seen == data.Next) {
-                state->seenNext++;
-                state->accNext += data.acc;
-            }
-            data.seen = data.No;
-        }
-        //state->map.clear();
-
         return (state->time < graph->maxTime)
             && (state->seenNow == properties->neighbourCount);
     }
@@ -134,30 +103,21 @@ struct heat
         const channel_type *channel,
         const message_type *messageIn,
         const properties_type *properties,
-        device_type *state,
-        const void *src
+        device_type *state
     ){  
         // How much does heat from this edge contribute?
         int32_t weightedHeat = mul_fix16(channel->weight, messageIn->heat); 
         
-        struct device_data_type data;
-        //state->mutex->lock();
         // Accumulate for this time-step or the next
         if(messageIn->time == state->time){
-            data.seen = data.Now;
-            data.acc = weightedHeat;
-            //state->seenNow += 1;
-            //state->accNow  += weightedHeat;
+            state->seenNow += 1;
+            state->accNow  += weightedHeat;
         }else if(messageIn->time == state->time+1){
-            data.seen = data.Next;
-            data.acc = weightedHeat;
-            //state->seenNext += 1;
-            //state->accNext  += weightedHeat;
+            state->seenNext += 1;
+            state->accNext  += weightedHeat;
         }else{
             assert(0); // Should never happen
         }
-        state->map[src] = data;
-        //state->mutex->unlock();
     }
 
     static bool on_send(
@@ -166,23 +126,7 @@ struct heat
         const properties_type *properties,
         device_type *state
     ){
-#if 0
-        // Summarise edges
-        for (std::pair<const void * const, device_data_type> &pair: state->map) {
-            device_data_type &data = pair.second;
-            std::clog << "src: " << pair.first << ", seen: " << (unsigned)data.seen << std::endl;
-            if (data.seen == data.Now) {
-                state->seenNow++;
-                state->accNow += data.acc;
-            } else if (data.seen == data.Next) {
-                state->seenNext++;
-                state->accNext += data.acc;
-            }
-            data.seen = data.No;
-        }
-
         assert( ready_to_send(graph, properties, state) );
-#endif
         
         // Update state
         state->time = state->time+1;

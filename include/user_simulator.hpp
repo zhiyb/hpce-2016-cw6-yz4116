@@ -12,8 +12,6 @@
 
 #include "util.hpp"
 
-#include <tbb/parallel_for.h>
-
 template<class TGraph>
 class Simulator
 {
@@ -193,8 +191,7 @@ private:
             &(e->channel),
             &(e->messageData),
             &(e->dst->properties),
-            &(e->dst->state),
-            e->src
+            &(e->dst->state)
         );
         e->messageStatus=0; // The edge is now idle
         
@@ -205,12 +202,9 @@ private:
     {
         log(2, "stepping edges");
         bool active=false;
-        tbb::parallel_for(0u, (unsigned)m_edges.size(), [&](unsigned i) {
-        //for(unsigned i=0; i<m_edges.size(); i++){
-            if (step_edge(i ,&m_edges[i]))
-                active = true;
-        //}
-        });
+        for(unsigned i=0; i<m_edges.size(); i++){
+            active = step_edge(i ,&m_edges[i]) || active;
+        }        
         log(2, "stepping nodes");
         for(unsigned i=0; i<m_nodes.size(); i++){
             active = step_node(i, &m_nodes[i]) || active;

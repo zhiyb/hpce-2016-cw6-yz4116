@@ -6,5 +6,8 @@
 *.ref
 *.got
 *.stackdump
+.*.swp
+.*.un~
 
+bin/
 w/

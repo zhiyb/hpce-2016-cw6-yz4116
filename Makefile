@@ -32,6 +32,9 @@ LOG	?= 0
 w/heat%_rect.graph: | bin/tools/generate_heat_rect w
 	bin/tools/generate_heat_rect $* $(UPD) $(SUB) $(SPA) > $@
 
+w/heat_%.graph: | w
+	octave src/tools/generate_heat_$*.m > $@
+
 w/%.ref.mjpeg: w/%.graph | bin/ref/simulator
 	(time $| --log-level $(LOG) $< $(@:.mjpeg=.stats) $@) 2>&1 | tee $(@:.mjpeg=.log)
 
@@ -46,7 +49,9 @@ results/%.pass: w/%.ref.mjpeg w/%.user.mjpeg | results
 	gprof $* > $@
 	gvim $@
 
-test:	results/heat128_rect.pass
+test:	results/heat128_rect.pass \
+	results/heat_hex.pass \
+	results/heat_mesh.pass
 
 .PHONY: pdf
 pdf:	results/$(PLATFORM).pdf

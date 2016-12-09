@@ -12,6 +12,8 @@
 
 #include "jpeg_helpers.hpp"
 
+#include <tbb/parallel_for.h>
+
 struct heat
 {
     static const char *type_name()
@@ -227,8 +229,10 @@ struct heat
             
             std::vector<uint8_t> pixels(scanWidth*m_graph->height);
             
-            for(unsigned y=0; y<m_graph->height; y++){
-                for(unsigned x=0; x<m_graph->width; x++){
+	        tbb::parallel_for(0u, (unsigned)m_graph->height, [&](unsigned y) {
+            //for(unsigned y=0; y<m_graph->height; y++){
+                tbb::parallel_for(0u, (unsigned)m_graph->width, [&](unsigned x) {
+                //for(unsigned x=0; x<m_graph->width; x++){
                     unsigned deviceIndex = find_closest_device(x,y);
                     
                     const properties_type *device = m_indexToDevice[deviceIndex];
@@ -240,9 +244,11 @@ struct heat
                     pixels[ y*scanWidth + x*3 + 2 ] = colour[2];
                     
                     //fprintf(stderr, " %4.2f (%x%x%x)", heat/65536.0, colour[0]>>4, colour[1]>>4,colour[2]>>4);
-                }
+                //}
+                });
                 //fprintf(stderr, "\n");
-            }
+            //}
+            });
             //fprintf(stderr, "\n\n");
 
             

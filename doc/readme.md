@@ -29,6 +29,8 @@ A quick analysis reveals the function `renderSlice` that is calling `find_closes
 Results
 --------
 
+All results, including statistics and mjpeg rendering outputs, are compared to the reference results by using the `diff` utility, to make sure they matched exactly.
+
 Topology | Reference | Parallelised | Speed up
 --|--|--|--
 Rect 128 | 10.393s | 4.942s | 2.10x

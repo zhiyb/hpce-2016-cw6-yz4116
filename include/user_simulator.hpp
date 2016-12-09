@@ -12,6 +12,8 @@
 
 #include "util.hpp"
 
+#include <tbb/parallel_for.h>
+
 template<class TGraph>
 class Simulator
 {
@@ -33,6 +35,7 @@ private:
         device_type state;
         std::vector<edge*> incoming;
         std::vector<edge*> outgoing;
+        bool blocked, output;
     };
     
     struct edge
@@ -114,32 +117,63 @@ private:
     std::ostream &m_statsDst;
     stats m_stats;
     
+    bool update_node(unsigned index, node *n)
+    {
+        bool act = false;
+        for (unsigned i = 0; i != n->incoming.size(); i++) {
+            edge *e = n->incoming[i];
+            switch (e->messageStatus) {
+            case 0:
+                //log(4, "  edge %u -> %u : empty", e->src->properties.id, e->dst->properties.id);
+                //m_stats.edgeIdleSteps++;
+                continue;
+            case 1:
+                //log(3, "  edge %u -> %u : deliver", e->src->properties.id, e->dst->properties.id);
+                //m_stats.edgeDeliverSteps++;
+                
+                // Deliver the message to the device
+                TGraph::on_recv(
+                    &m_graph,
+                    &(e->channel),
+                    &(e->messageData),
+                    &(n->properties),
+                    &(n->state)
+                );
+                //e->messageStatus=0; // The edge is now idle
+                //act = true;
+                //continue;
+            default:
+                //log(3, "  edge %u -> %u : delay (%u)", e->src->properties.id, e->dst->properties.id, e->messageStatus);
+                e->messageStatus--;
+                //m_stats.edgeTransitSteps++;
+                act = true;
+                continue;
+            }
+        }
+        return act;
+    }
+
     // Give a single node (i.e. a device) the chance to
     // send a message.
     // \retval Return true if the device is blocked or sends. False if it is idle.
     bool step_node(unsigned index, node *n)
     {       
         if(!TGraph::ready_to_send(&m_graph, &(n->properties), &(n->state)) ){
-            log(4, "  node %u : idle", index);
-            m_stats.nodeIdleSteps++;
+            //log(4, "  node %u : idle", index);
+            //m_stats.nodeIdleSteps++;
             return false; // Device doesn't want to send
         }
         
-        for(unsigned i=0; i < n->outgoing.size(); i++){
-            if( n->outgoing[i]->messageStatus>0 ){
-                log(3, "  node %u : blocked on %u->%u", index, n->outgoing[i]->src->properties.id, n->outgoing[i]->src->properties.id);
-                m_stats.nodeBlockedSteps++;
-                return true; // One of the outputs is full, so we are blocked
-            }
-        }
+        if (n->blocked)
+            return true;
         
-        log(3, "  node %u : send", index);
-        m_stats.nodeSendSteps++;
+        //log(3, "  node %u : send", index);
+        //m_stats.nodeSendSteps++;
         
         message_type message;
         
         // Get the device to send the message
-        bool doOutput = TGraph::on_send(
+        n->output = TGraph::on_send(
             &m_graph,
             &message,
             &(n->properties),
@@ -152,6 +186,7 @@ private:
             n->outgoing[i]->messageStatus = 1 + n->outgoing[i]->delay; // How long until it is ready?
         }
         
+#if 0
         if(doOutput){
             log(3, "  node %u : output", index);    
 
@@ -162,53 +197,140 @@ private:
             } );
             
         }
+#endif
         
         return true;
     }
     
-    bool step_edge(unsigned index, edge *e)
+    bool stats_edge(const edge *e)
     {
-        if(e->messageStatus == 0){
-            log(4, "  edge %u -> %u : empty", e->src->properties.id, e->dst->properties.id);
+        switch (e->messageStatus) {
+        case 0:
             m_stats.edgeIdleSteps++;
             return false;
-        }
-        
-        if(e->messageStatus > 1){
-            log(3, "  edge %u -> %u : delay (%u)", e->src->properties.id, e->dst->properties.id, e->messageStatus);
-            e->messageStatus--;
+        case 1:
+            m_stats.edgeDeliverSteps++;
+            return true;
+        default:
             m_stats.edgeTransitSteps++;
             return true;
         }
-       
-        log(3, "  edge %u -> %u : deliver", e->src->properties.id, e->dst->properties.id);
-        m_stats.edgeDeliverSteps++;
-            
+    }
+
+    uint32_t stats_node(node *n)
+    {
+        if(!TGraph::ready_to_send(&m_graph, &(n->properties), &(n->state)) ){
+            //log(4, "  node %u : idle", index);
+            return 0x01;
+            m_stats.nodeIdleSteps++;
+            return false; // Device doesn't want to send
+        }
         
-        // Deliver the message to the device
-        TGraph::on_recv(
-            &m_graph,
-            &(e->channel),
-            &(e->messageData),
-            &(e->dst->properties),
-            &(e->dst->state)
-        );
-        e->messageStatus=0; // The edge is now idle
+        for(unsigned i=0; i < n->outgoing.size(); i++){
+            if( n->outgoing[i]->messageStatus>0 ){
+                //log(3, "  node %u : blocked on %u->%u", index, n->outgoing[i]->src->properties.id, n->outgoing[i]->src->properties.id);
+                n->blocked = true;
+                return 0x0100;
+                m_stats.nodeBlockedSteps++;
+                return true; // One of the outputs is full, so we are blocked
+            }
+        }
         
+        //log(3, "  node %u : send", index);
+        n->blocked = false;
+        return 0x010000;
+        m_stats.nodeSendSteps++;
         return true;
     }
-    
+
+// Map-reduce
+#define SEQ_SIZE    64u
+#define MR_SIZE     64u
+
+    void stats_nodes(node *n, unsigned cnt, unsigned *idle, unsigned *blocked, unsigned *send)
+    {
+        if (cnt <= SEQ_SIZE) {
+            uint32_t stats = 0;
+            while (cnt--)
+                stats += stats_node(n++);
+            *idle = stats & 0xff;
+            *blocked = (stats >> 8) & 0xff;
+            *send = (stats >> 16) & 0xff;
+        } else {
+            const unsigned blocks = std::min((cnt + SEQ_SIZE - 1) / SEQ_SIZE, MR_SIZE);
+            const unsigned bsize = (cnt + blocks - 1) / blocks;
+            std::vector<unsigned> p_idle(blocks), p_blocked(blocks), p_send(blocks);
+            tbb::parallel_for(0u, blocks, [&](unsigned i) {
+                unsigned s = i * bsize;
+                unsigned e = std::min((i + 1) * bsize, cnt);
+                stats_nodes(n + i * bsize, e - s, &p_idle[i], &p_blocked[i], &p_send[i]);
+            });
+            unsigned v_idle = 0, v_blocked = 0, v_send = 0;
+            for (unsigned i = 0; i != blocks; i++) {
+                v_idle += p_idle[i];
+                v_blocked += p_blocked[i];
+                v_send += p_send[i];
+            }
+            *idle = v_idle;
+            *blocked = v_blocked;
+            *send = v_send;
+        }
+    }
+
+    bool stats_nodes()
+    {
+        unsigned idle, blocked, send;
+        stats_nodes(m_nodes.data(), m_nodes.size(), &idle, &blocked, &send);
+        m_stats.nodeIdleSteps += idle;
+        m_stats.nodeBlockedSteps += blocked;
+        m_stats.nodeSendSteps += send;
+        return blocked || send;
+    }
+
     bool step_all()
     {
         log(2, "stepping edges");
         bool active=false;
-        for(unsigned i=0; i<m_edges.size(); i++){
-            active = step_edge(i ,&m_edges[i]) || active;
-        }        
+        // Edge statistics
+        for (const edge &e: m_edges)
+            active |= stats_edge(&e);
+        // Step edges
+#if 1
+        tbb::parallel_for(tbb::blocked_range<unsigned>(0, m_nodes.size(), 512), [&](const tbb::blocked_range<unsigned>& range) {
+            unsigned s = range.begin(), e = range.end();
+            for (unsigned i = s; i != e; i++)
+                update_node(i, &m_nodes[i]);
+        }, tbb::simple_partitioner());
+#else
+        tbb::parallel_for(0u, (unsigned)m_nodes.size(), [&](unsigned i) {
+        //for(unsigned i=0; i<m_nodes.size(); i++){
+            update_node(i, &m_nodes[i]);
+        //}
+        });
+#endif
         log(2, "stepping nodes");
-        for(unsigned i=0; i<m_nodes.size(); i++){
-            active = step_node(i, &m_nodes[i]) || active;
-        }
+        // Node statistics
+        active |= stats_nodes();
+#if 1
+        tbb::parallel_for(tbb::blocked_range<unsigned>(0, m_nodes.size(), 512), [&](const tbb::blocked_range<unsigned>& range) {
+            unsigned s = range.begin(), e = range.end();
+            for (unsigned i = s; i != e; i++)
+                step_node(i, &m_nodes[i]);
+        }, tbb::simple_partitioner());
+#else
+        tbb::parallel_for(0u, (unsigned)m_nodes.size(), [&](unsigned i) {
+        //for(unsigned i=0; i<m_nodes.size(); i++){
+            step_node(i, &m_nodes[i]);
+        //}
+        });
+#endif
+        // Node output
+        for (node &n: m_nodes)
+            if (n.output) {
+                //log(3, "  node %u : output", index);    
+                m_supervisor.onDeviceOutput(&(n.properties), &n.outgoing[0]->messageData);
+                n.output = false;
+            }
         return active;
     }
     
@@ -251,6 +373,8 @@ public:
         unsigned index=m_nodes.size();
         node n;
         n.properties=device;
+        n.blocked = false;
+        n.output = false;
         m_nodes.push_back(n);
         
         m_supervisor.onAttachNode(&m_nodes[index].properties);
@@ -296,12 +420,14 @@ public:
             // Run all the nodes
             active = step_all();
             
+#if 0
             // Flush any outputs from the queue to the supervisor
             while(!m_outputs.empty()){
                 const output &o = m_outputs.front();
                 m_supervisor.onDeviceOutput(o.source, &o.output);
                 m_outputs.pop_front();
             }
+#endif
             
             // Send statistics out
             m_statsDst<<m_stats.stepIndex<<", "<<m_stats.nodeIdleSteps<<", "<<m_stats.nodeBlockedSteps<<", "<<m_stats.nodeSendSteps;

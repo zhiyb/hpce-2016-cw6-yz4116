@@ -35,7 +35,7 @@ private:
         device_type state;
         std::vector<edge*> incoming;
         std::vector<edge*> outgoing;
-        bool blocked, output;
+        bool /*blocked,*/ output;
     };
     
     struct edge
@@ -153,6 +153,7 @@ private:
         return act;
     }
 
+#if 0
     // Give a single node (i.e. a device) the chance to
     // send a message.
     // \retval Return true if the device is blocked or sends. False if it is idle.
@@ -201,6 +202,7 @@ private:
         
         return true;
     }
+#endif
     
     bool stats_edge(const edge *e)
     {
@@ -229,7 +231,7 @@ private:
         for(unsigned i=0; i < n->outgoing.size(); i++){
             if( n->outgoing[i]->messageStatus>0 ){
                 //log(3, "  node %u : blocked on %u->%u", index, n->outgoing[i]->src->properties.id, n->outgoing[i]->src->properties.id);
-                n->blocked = true;
+                //n->blocked = true;
                 return 0x0100;
                 m_stats.nodeBlockedSteps++;
                 return true; // One of the outputs is full, so we are blocked
@@ -237,7 +239,23 @@ private:
         }
         
         //log(3, "  node %u : send", index);
-        n->blocked = false;
+        //n->blocked = false;
+        message_type message;
+        
+        // Get the device to send the message
+        n->output = TGraph::on_send(
+            &m_graph,
+            &message,
+            &(n->properties),
+            &(n->state)
+        );
+        
+        for(unsigned i=0; i < n->outgoing.size(); i++){
+            assert( 0 == n->outgoing[i]->messageStatus );
+            n->outgoing[i]->messageData = message; // Copy message into channel
+            n->outgoing[i]->messageStatus = 1 + n->outgoing[i]->delay; // How long until it is ready?
+        }
+
         return 0x010000;
         m_stats.nodeSendSteps++;
         return true;
@@ -249,6 +267,7 @@ private:
 
     void stats_nodes(node *n, unsigned cnt, unsigned *idle, unsigned *blocked, unsigned *send)
     {
+        //std::clog << __func__ << ": " << n << ", " << cnt << std::endl;
         if (cnt <= SEQ_SIZE) {
             uint32_t stats = 0;
             while (cnt--)
@@ -259,8 +278,9 @@ private:
         } else {
             const unsigned blocks = std::min((cnt + SEQ_SIZE - 1) / SEQ_SIZE, MR_SIZE);
             const unsigned bsize = (cnt + blocks - 1) / blocks;
+            //std::clog << "blocks: " << blocks << ", bsize: " << bsize << std::endl;
             std::vector<unsigned> p_idle(blocks), p_blocked(blocks), p_send(blocks);
-            tbb::parallel_for(0u, blocks, [&](unsigned i) {
+            tbb::parallel_for(0u, blocks, [=, &p_idle, &p_blocked, &p_send](unsigned i) {
                 unsigned s = i * bsize;
                 unsigned e = std::min((i + 1) * bsize, cnt);
                 stats_nodes(n + i * bsize, e - s, &p_idle[i], &p_blocked[i], &p_send[i]);
@@ -311,6 +331,7 @@ private:
         log(2, "stepping nodes");
         // Node statistics
         active |= stats_nodes();
+#if 0
 #if 1
         tbb::parallel_for(tbb::blocked_range<unsigned>(0, m_nodes.size(), 512), [&](const tbb::blocked_range<unsigned>& range) {
             unsigned s = range.begin(), e = range.end();
@@ -323,6 +344,7 @@ private:
             step_node(i, &m_nodes[i]);
         //}
         });
+#endif
 #endif
         // Node output
         for (node &n: m_nodes)
@@ -373,7 +395,7 @@ public:
         unsigned index=m_nodes.size();
         node n;
         n.properties=device;
-        n.blocked = false;
+        //n.blocked = false;
         n.output = false;
         m_nodes.push_back(n);
         
